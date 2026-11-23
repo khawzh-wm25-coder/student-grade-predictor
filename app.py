@@ -5,90 +5,85 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, r2_score
 
-# Page configuration
-st.set_page_config(page_title="Student Grade Early-Warning System", page_icon="🎓", layout="centered")
+st.set_page_config(page_title="Student Grade Early-Warning System", page_icon="🎓", layout="wide")
 
 st.title("🎓 Student Performance Early-Warning Prototype")
 st.markdown(
-    "Predict a student's final grade (**G3**, scale 0–20) using the UCI Student Performance dataset "
-    "to help educators identify at-risk students early."
+    "Predict final grades (**G3**, scale 0–20) using the UCI Student Performance dataset "
+    "to identify at-risk students early."
 )
 
-# 1. Load data and train model (cached so it runs fast)
+FEATURES = ["G1", "G2", "failures", "absences", "studytime"]
+
 @st.cache_resource
 def load_and_train():
-    # UCI dataset uses semicolons as delimiters
     df = pd.read_csv("student-mat.csv", sep=";")
-    
-    features = ["G1", "G2", "failures", "absences", "studytime"]
-    target = "G3"
-    
-    X = df[features]
-    y = df[target]
-    
+    X = df[FEATURES]
+    y = df["G3"]
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    
     model = RandomForestRegressor(n_estimators=100, random_state=42)
     model.fit(X_train, y_train)
-    
     preds = model.predict(X_test)
-    rmse = np.sqrt(mean_squared_error(y_test, preds))
-    r2 = r2_score(y_test, preds)
-    
-    return model, rmse, r2
+    return model, np.sqrt(mean_squared_error(y_test, preds)), r2_score(y_test, preds)
 
 model, rmse, r2 = load_and_train()
 
-# 2. Sidebar inputs for teachers/advisors
-st.sidebar.header("📋 Enter Student Profile")
-
-g1 = st.sidebar.slider("First Period Grade (G1)", min_value=0, max_value=20, value=11)
-g2 = st.sidebar.slider("Second Period Grade (G2)", min_value=0, max_value=20, value=11)
-failures = st.sidebar.selectbox("Past Class Failures", options=[0, 1, 2, 3], index=0)
-absences = st.sidebar.slider("School Absences (Days)", min_value=0, max_value=75, value=4)
+# --- Sidebar: Single Student Prediction ---
+st.sidebar.header("📋 Single Student Profile")
+g1 = st.sidebar.slider("First Period Grade (G1)", 0, 20, 11)
+g2 = st.sidebar.slider("Second Period Grade (G2)", 0, 20, 11)
+failures = st.sidebar.selectbox("Past Class Failures", [0, 1, 2, 3], index=0)
+absences = st.sidebar.slider("School Absences (Days)", 0, 75, 4)
 studytime = st.sidebar.selectbox(
-    "Weekly Study Time",
-    options=[1, 2, 3, 4],
-    format_func=lambda x: {
-        1: "1 (< 2 hours)",
-        2: "2 (2 to 5 hours)",
-        3: "3 (5 to 10 hours)",
-        4: "4 (> 10 hours)"
-    }[x],
+    "Weekly Study Time", [1, 2, 3, 4],
+    format_func=lambda x: {1: "1 (< 2 hrs)", 2: "2 (2–5 hrs)", 3: "3 (5–10 hrs)", 4: "4 (> 10 hrs)"}[x],
     index=1
 )
 
-# 3. Generate Prediction
-input_data = pd.DataFrame([[g1, g2, failures, absences, studytime]],
-                          columns=["G1", "G2", "failures", "absences", "studytime"])
-predicted_g3 = model.predict(input_data)[0]
+# --- Tab Layout: Single vs. Batch Prediction ---
+tab1, tab2 = st.tabs(["👤 Single Student Prediction", "📂 Batch Class CSV Upload"])
 
-# 4. Display Results
-st.subheader("📊 Prediction Output")
-col1, col2 = st.columns(2)
+with tab1:
+    input_df = pd.DataFrame([[g1, g2, failures, absences, studytime]], columns=FEATURES)
+    pred_g3 = model.predict(input_df)[0]
 
-with col1:
-    st.metric(label="Predicted Final Grade (G3)", value=f"{predicted_g3:.1f} / 20")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Predicted Final Grade (G3)", f"{pred_g3:.1f} / 20")
+    with col2:
+        if pred_g3 < 10:
+            st.error("🚨 High Risk (Projected Fail: G3 < 10)")
+        elif pred_g3 < 13:
+            st.warning("⚠️ Moderate Risk (Borderline Pass)")
+        else:
+            st.success("✅ Low Risk (On Track)")
 
-with col2:
-    if predicted_g3 < 10:
-        st.error("🚨 High Risk (Projected Fail: G3 < 10)")
-    elif predicted_g3 < 13:
-        st.warning("⚠️ Moderate Risk (Borderline Pass)")
-    else:
-        st.success("✅ Low Risk (On Track)")
+with tab2:
+    st.subheader("Upload Class Roster CSV")
+    st.write(f"Upload a CSV containing columns: `{', '.join(FEATURES)}` (comma- or semicolon-separated).")
+    
+    uploaded_file = st.file_uploader("Choose a CSV file", type=["csv"])
+    if uploaded_file is not None:
+        # Auto-detect semicolon vs comma delimiter
+        raw_df = pd.read_csv(uploaded_file, sep=None, engine="python")
+        if all(col in raw_df.columns for col in FEATURES):
+            results_df = raw_df.copy()
+            results_df["Predicted_G3"] = np.round(model.predict(raw_df[FEATURES]), 2)
+            results_df["Risk_Level"] = np.where(
+                results_df["Predicted_G3"] < 10, "High Risk",
+                np.where(results_df["Predicted_G3"] < 13, "Moderate Risk", "Low Risk")
+            )
+            st.dataframe(results_df[FEATURES + ["Predicted_G3", "Risk_Level"]], use_container_width=True)
+            
+            csv_out = results_df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "⬇️ Download Predictions CSV",
+                data=csv_out,
+                file_name="predicted_student_grades.csv",
+                mime="text/csv"
+            )
+        else:
+            st.error(f"Missing required columns. Ensure your file contains: {FEATURES}")
 
-# Intervention Guidance
-st.markdown("### 💡 Recommended Action")
-if predicted_g3 < 10:
-    st.write("Immediate academic advisor intervention recommended: schedule tutoring and review attendance records.")
-elif absences > 10 or failures > 0:
-    st.write("Monitor attendance and assign targeted study-skills support.")
-else:
-    st.write("Student is performing well; continue standard progress tracking.")
-
-# Model Performance Footer (links directly to Task 1 Success Criteria)
 with st.expander("ℹ️ Model Validation Metrics (Test Set)"):
-    st.write(f"**Algorithm:** Random Forest Regressor")
-    st.write(f"**Test RMSE:** {rmse:.2f} grade points (Target: < 2.0)")
-    st.write(f"**Test R²:** {r2:.2f} (Target: > 0.80)")
+    st.write(f"**Algorithm:** Random Forest Regressor | **Test RMSE:** {rmse:.2f} | **Test R²:** {r2:.2f}")
